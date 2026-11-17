@@ -80,6 +80,44 @@ except ImportError:
 import iocp
 from iocp import Output
 
+# Output types that embed other indicators are resolved first when candidate
+# spans overlap (e.g. a Filepath contains a Filename, a URL contains a Host).
+TYPE_PRIORITY = {
+	'Filepath': 90,
+	'URL': 80,
+	'Registry': 70,
+	'Email': 60,
+	'Filename': 50,
+	'SHA256': 40,
+	'SHA1': 30,
+	'MD5': 20,
+	'Host': 15,
+	'IP': 10,
+	'CVE': 10,
+}
+
+# Characters that legitimately end prose but never end an indicator itself.
+TRAILING_PUNCTUATION = '.,;:!?"\'’”…'
+
+
+class CollectingHandler(Output.OutputHandler):
+	"""Output handler that keeps parsed records instead of printing them."""
+
+	def __init__(self):
+		self.records = []
+
+	def print_match(self, fpath, page, name, match, record=None):
+		self.records.append({
+			'path': fpath,
+			'page': page,
+			'type': name,
+			'match': match,
+			'raw': record['raw'],
+			'start': record['start'],
+			'end': record['end'],
+		})
+
+
 class Parser(object):
 	patterns = {}
 	defang = {}
@@ -109,6 +147,7 @@ class Parser(object):
 			raise NotImplementedError(e)
 
 		self.library = library
+		self.dedup_store = set()
 		if input_format == 'pdf':
 			if library not in IMPORTS:
 				e = 'Selected PDF parser library not found: %s' % (library)
@@ -121,7 +160,10 @@ class Parser(object):
 	def load_patterns(self, fpath):
 		config = ConfigParser.ConfigParser()
 		with open(fpath) as f:
-			config.readfp(f)
+			if hasattr(config, 'read_file'):
+				config.read_file(f)
+			else:
+				config.readfp(f)
 
 		for ind_type in config.sections():
 			try:
@@ -130,7 +172,8 @@ class Parser(object):
 				continue
 
 			if ind_pattern:
-				ind_regex = re.compile(ind_pattern)
+				flags = re.IGNORECASE if config.has_option(ind_type, 'case_insensitive') else 0
+				ind_regex = re.compile(ind_pattern, flags)
 				self.patterns[ind_type] = ind_regex
 
 			try:
@@ -156,40 +199,129 @@ class Parser(object):
 	def is_whitelisted(self, ind_match, ind_type):
 		try:
 			for w in self.whitelist[ind_type]:
-				if w.findall(ind_match):
+				if w.search(ind_match):
 					return True
 		except KeyError as e:
 			pass
 		return False
 
-	def parse_page(self, fpath, data, page_num):
+	def _trim_span(self, data, start, end):
+		"""Strip sentence punctuation and unmatched trailing brackets from a span."""
+		while end > start:
+			ch = data[end - 1]
+			if ch in TRAILING_PUNCTUATION:
+				end -= 1
+				continue
+			if ch in ')]}':
+				open_ch = {')': '(', ']': '[', '}': '{'}[ch]
+				if data.count(open_ch, start, end) <= data.count(ch, start, end):
+					end -= 1
+					continue
+			break
+		return start, end
+
+	def _defang_value(self, ind_type, value):
+		if ind_type in self.defang:
+			return re.sub(r'\[\.\]', '.', value)
+		return value
+
+	def _normalize(self, ind_type, value):
+		"""Build a canonical key so surface variants of one IOC dedup together."""
+		value = self._defang_value(ind_type, value).strip().lower()
+		if ind_type == 'URL':
+			match = re.match(r'^([a-z]{3,})://([^/]*)(/.*)?$', value)
+			if match:
+				scheme, host, path = match.group(1), match.group(2), match.group(3) or ''
+				host = host.rstrip('.;:,!?')
+				path = path.rstrip('.;:,!?)\\]}\'\"')
+				value = '%s://%s%s' % (scheme, host, path)
+		return value
+
+	def _collect_candidates(self, data):
+		candidates = []
 		for ind_type, ind_regex in self.patterns.items():
-			matches = ind_regex.findall(data)
-
-			for ind_match in matches:
-				if isinstance(ind_match, tuple):
-					ind_match = ind_match[0]
-
-				if self.is_whitelisted(ind_match, ind_type):
+			for match in ind_regex.finditer(data):
+				start, end = match.span(1) if match.groups() else match.span()
+				start, end = self._trim_span(data, start, end)
+				if end <= start:
 					continue
 
-				if ind_type in self.defang:
-					ind_match = re.sub(r'\[\.\]', '.', ind_match)
+				raw = data[start:end]
+				value = self._defang_value(ind_type, raw)
+				if self.is_whitelisted(value, ind_type):
+					continue
 
-				if self.dedup:
-					if (ind_type, ind_match) in self.dedup_store:
-						continue
+				candidates.append({
+					'type': ind_type,
+					'raw': raw,
+					'value': value,
+					'start': start,
+					'end': end,
+				})
+		return candidates
 
-					self.dedup_store.add((ind_type, ind_match))
+	def _resolve_overlaps(self, candidates):
+		"""Drop lower-priority indicators fully contained in a stronger one."""
+		ordered = sorted(
+			candidates,
+			key=lambda c: (c['start'], -TYPE_PRIORITY.get(c['type'], 0), -(c['end'] - c['start']))
+		)
+		accepted = []
+		for cand in ordered:
+			covered = False
+			for kept in accepted:
+				if cand['start'] >= kept['start'] and cand['end'] <= kept['end']:
+					covered = True
+					break
+			if not covered:
+				accepted.append(cand)
+		accepted.sort(key=lambda c: (c['start'], c['end']))
+		return accepted
 
-				self.handler.print_match(fpath, page_num, ind_type, ind_match)
+	def extract_text(self, data, fpath='<string>', page_num=1):
+		"""Parse plain text and return structured records with evidence offsets."""
+		candidates = self._collect_candidates(data)
+		records = self._resolve_overlaps(candidates)
+
+		dedup_store = set()
+		results = []
+		for record in records:
+			if self.dedup:
+				key = (record['type'], self._normalize(record['type'], record['value']))
+				if key in dedup_store:
+					continue
+				dedup_store.add(key)
+			results.append({
+				'path': fpath,
+				'page': page_num,
+				'type': record['type'],
+				'match': record['value'],
+				'raw': record['raw'],
+				'start': record['start'],
+				'end': record['end'],
+			})
+		return results
+
+	def parse_page(self, fpath, data, page_num):
+		candidates = self._collect_candidates(data)
+		records = self._resolve_overlaps(candidates)
+
+		for record in records:
+			if self.dedup:
+				key = (record['type'], self._normalize(record['type'], record['value']))
+				if key in self.dedup_store:
+					continue
+				self.dedup_store.add(key)
+
+			self.handler.print_match(
+				fpath, page_num, record['type'], record['value'], record=record
+			)
 
 	def parse_pdf_pypdf2(self, f, fpath):
 		try:
 			pdf = PdfFileReader(f, strict = False)
 
-			if self.dedup:
-				self.dedup_store = set()
+			self.dedup_store = set()
 
 			self.handler.print_header(fpath)
 			page_num = 0
@@ -210,8 +342,7 @@ class Parser(object):
 			rsrcmgr = PDFResourceManager()
 			pagenos = set()
 
-			if self.dedup:
-				self.dedup_store = set()
+			self.dedup_store = set()
 
 			self.handler.print_header(fpath)
 			page_num = 0
@@ -242,10 +373,11 @@ class Parser(object):
 
 	def parse_txt(self, f, fpath):
 		try:
-			if self.dedup:
-				self.dedup_store = set()
+			self.dedup_store = set()
 
 			data = f.read()
+			if isinstance(data, bytes):
+				data = data.decode('utf-8', 'replace')
 			self.handler.print_header(fpath)
 			self.parse_page(fpath, data, 1)
 			self.handler.print_footer(fpath)
@@ -254,10 +386,11 @@ class Parser(object):
 
 	def parse_html(self, f, fpath):
 		try:
-			if self.dedup:
-				self.dedup_store = set()
-				
+			self.dedup_store = set()
+
 			data = f.read()
+			if isinstance(data, bytes):
+				data = data.decode('utf-8', 'replace')
 			soup = BeautifulSoup(data)
 			html = soup.findAll(text=True)
 
@@ -265,10 +398,10 @@ class Parser(object):
 			for elem in html:
 				if elem.parent.name in ['style', 'script', '[document]', 'head', 'title']:
 					continue
-				elif re.match('<!--.*-->', unicode(elem)):
+				elif re.match('<!--.*-->', str(elem)):
 					continue
 				else:
-					text += unicode(elem)
+					text += str(elem)
 
 			self.handler.print_header(fpath)
 			self.parse_page(fpath, text, 1)

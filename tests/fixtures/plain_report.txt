@@ -1,0 +1,2 @@
+Ordinary prose report without indicators, just punctuation. (Like this sentence.)
+No domains, no hashes, only ordinary words and numbers such as 12345.

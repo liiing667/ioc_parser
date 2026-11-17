@@ -1,0 +1,13 @@
+APT boundary regression report.
+Sentence URL ends with a period: http://evil.example.com/path/payload.
+Parenthesised URL (https://cdn.example.org/a/b) and a host (bad.example.net).
+Adjacent URLs http://a.example.com/x,http://b.example.com/y must stay separate.
+Defanged host bad[.]example[.]com and URL http://evil[.]example[.]com/c2.
+File path C:\Users\victim\Downloads\invoice.exe embeds a filename.
+Two plain hosts one.example.com two.example.org on one line.
+IP inside a URL: http://203.0.113.7/admin.php versus standalone 198.51.100.9.
+Email attacker@evil.example.co.uk has a multi-label domain.
+Repeated hash d41d8cd98f00b204e9800998ecf8427e and d41d8cd98f00b204e9800998ecf8427e.
+Case variant EVIL.Example.COM versus evil.example.com.
+Whitelisted 192.168.10.20 and www.google.com must be skipped.
+Query URL http://cdn.example.net/search?q=a&b=c#frag ends cleanly.

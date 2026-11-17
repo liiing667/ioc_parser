@@ -13,6 +13,15 @@ IOC Parser is a tool to extract indicators of compromise from security reports i
 ## Installation
 **pip install ioc_parser**
 
+## Extraction behavior
+* URL/Host matches are trimmed of sentence punctuation and unmatched trailing brackets, so adjacent indicators separated by commas or parentheses are reported individually.
+* Overlapping indicators follow a type priority (e.g. a `Filepath` suppresses the embedded `Filename`, a `URL` suppresses the embedded `Host`/`IP`).
+* With `-d`, indicators are deduplicated after normalization (defang refanging, case folding), not only on exact string equality.
+* Each parsed record keeps its raw evidence text and character offsets; programmatic callers can use `Parser.extract_text(text)`.
+
+## Tests
+**python -m pytest -q**
+
 ## Requirements
 One of the following PDF parsing libraries:
 * [PyPDF2](https://github.com/mstamy2/PyPDF2) - *pip install pypdf2*
