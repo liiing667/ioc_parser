@@ -79,6 +79,7 @@ except ImportError:
 # Import project source files
 import iocp
 from iocp import Output
+from iocp import Whitelist
 
 class Parser(object):
 	patterns = {}
@@ -121,7 +122,10 @@ class Parser(object):
 	def load_patterns(self, fpath):
 		config = ConfigParser.ConfigParser()
 		with open(fpath) as f:
-			config.readfp(f)
+			if hasattr(config, 'read_file'):
+				config.read_file(f)
+			else:
+				config.readfp(f)
 
 		for ind_type in config.sections():
 			try:
@@ -142,25 +146,10 @@ class Parser(object):
 				self.defang[ind_type] = True
 
 	def load_whitelists(self, fpath):
-		whitelist = {}
-
-		searchdir = os.path.join(fpath, "whitelist_*.ini")
-		fpaths = glob.glob(searchdir)
-		for fpath in fpaths:
-			t = os.path.splitext(os.path.split(fpath)[1])[0].split('_',1)[1]
-			patterns = [line.strip() for line in open(fpath)]
-			whitelist[t]  = [re.compile(p) for p in patterns]
-
-		return whitelist
+		return Whitelist.load(fpath, valid_types=self.patterns)
 
 	def is_whitelisted(self, ind_match, ind_type):
-		try:
-			for w in self.whitelist[ind_type]:
-				if w.findall(ind_match):
-					return True
-		except KeyError as e:
-			pass
-		return False
+		return self.whitelist.is_whitelisted(ind_type, ind_match)
 
 	def parse_page(self, fpath, data, page_num):
 		for ind_type, ind_regex in self.patterns.items():

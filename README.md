@@ -23,3 +23,28 @@ For HTML parsing support:
 
 For HTTP(S) support:
 * [requests](http://docs.python-requests.org/en/latest/) - *pip install requests*
+
+## Whitelists
+Whitelists live in `iocp/data/whitelists/whitelist_<TYPE>.ini`, one file per
+IOC type (`Host`, `URL`, `IP`, `Email`, ...). Each entry explicitly declares
+its match semantics and only applies to the IOC type of its file:
+
+```
+exact:example.com       # full-string match (case-insensitive)
+suffix:.example.com     # string suffix, e.g. www.example.com but not example.com
+pattern:^https?://(www\.)?example\.com/   # regex search, anchor it yourself
+```
+
+Blank lines and `#` comments are ignored. Loading fails closed: duplicate or
+conflicting entries, unknown kinds, invalid regexes and unknown IOC types
+abort the load with a `WhitelistError` instead of silently allowing anything.
+
+Legacy whitelist files (one unanchored regex per line) must be migrated
+before they load; domain-shaped entries are tightened to `exact` + `suffix`
+so lookalikes such as `evil-example.com` no longer pass:
+
+```
+python -m iocp.Whitelist LEGACY_WHITELIST_DIR OUT_DIR
+```
+
+Run the whitelist test matrix with `python -m pytest -q`.
