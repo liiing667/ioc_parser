@@ -5,6 +5,11 @@ import sys
 import csv
 import json
 
+try:
+	text_type = unicode
+except NameError:
+	text_type = str
+
 OUTPUT_FORMATS = ('csv', 'tsv', 'json', 'yara', 'netflow', )
 
 def getHandler(output_format):
@@ -31,6 +36,10 @@ class OutputHandler(object):
 	def print_error(self, fpath, exception):
 		print("[ERROR] %s" % (exception))
 
+	def print_remote_error(self, fpath, exception):
+		category = getattr(exception, 'category', 'remote_error')
+		print("[REMOTE ERROR:%s] %s: %s" % (category, fpath, exception))
+
 class OutputHandler_csv(OutputHandler):
 	def __init__(self):
 		self.csv_writer = csv.writer(sys.stdout)
@@ -41,6 +50,10 @@ class OutputHandler_csv(OutputHandler):
 	def print_error(self, fpath, exception):
 		self.csv_writer.writerow((fpath, '0', 'error', exception))
 
+	def print_remote_error(self, fpath, exception):
+		category = getattr(exception, 'category', 'remote_error')
+		self.csv_writer.writerow((fpath, '0', category, exception))
+
 class OutputHandler_tsv(OutputHandler):
 	def __init__(self):
 		self.csv_writer = csv.writer(sys.stdout, delimiter = '\t')
@@ -50,6 +63,10 @@ class OutputHandler_tsv(OutputHandler):
 
 	def print_error(self, fpath, exception):
 		self.csv_writer.writerow((fpath, '0', 'error', exception))
+
+	def print_remote_error(self, fpath, exception):
+		category = getattr(exception, 'category', 'remote_error')
+		self.csv_writer.writerow((fpath, '0', category, exception))
 
 class OutputHandler_json(OutputHandler):
 	def print_match(self, fpath, page, name, match):
@@ -69,6 +86,17 @@ class OutputHandler_json(OutputHandler):
 			'file'      : os.path.basename(fpath),
 			'type'      : 'error',
 			'exception' : exception
+		}
+
+		print(json.dumps(data))
+
+	def print_remote_error(self, fpath, exception):
+		data = {
+			'path'      : fpath,
+			'file'      : os.path.basename(fpath),
+			'type'      : 'remote_error',
+			'category'  : getattr(exception, 'category', 'remote_error'),
+			'exception' : exception.args[0] if exception.args else text_type(exception)
 		}
 
 		print(json.dumps(data))
@@ -107,7 +135,7 @@ class OutputHandler_yara(OutputHandler):
 		
 class OutputHandler_netflow(OutputHandler):
 	def __init__(self):
-		print "host 255.255.255.255"
+		print("host 255.255.255.255")
 
 	def print_match(self, fpath, page, name, match):
 		data = {
@@ -115,4 +143,4 @@ class OutputHandler_netflow(OutputHandler):
 			'match': match
 		}
 		if data["type"] == "IP":
-			print " or host %s " % data["match"]
+			print(" or host %s " % data["match"])

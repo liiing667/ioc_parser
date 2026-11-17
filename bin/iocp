@@ -36,8 +36,10 @@
 ###################################################################################################
 
 import argparse
+import sys
 
 from iocp import Parser
+from iocp import Remote
 
 if __name__ == "__main__":
 	argparser = argparse.ArgumentParser()
@@ -50,4 +52,7 @@ if __name__ == "__main__":
 	args = argparser.parse_args()
 
 	parser = Parser.Parser(args.INI, args.INPUT_FORMAT, args.DEDUP, args.LIB, args.OUTPUT_FORMAT)
-	parser.parse(args.PATH)
+	try:
+		parser.parse(args.PATH)
+	except Remote.RemoteReadError as e:
+		sys.exit(1)

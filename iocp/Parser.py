@@ -49,6 +49,11 @@ try:
 except ImportError:
     from io import StringIO
 
+try:
+	text_type = unicode
+except NameError:
+	text_type = str
+
 # Import optional third-party libraries
 IMPORTS = []
 try:
@@ -79,6 +84,7 @@ except ImportError:
 # Import project source files
 import iocp
 from iocp import Output
+from iocp import Remote
 
 class Parser(object):
 	patterns = {}
@@ -86,6 +92,7 @@ class Parser(object):
 
 	def __init__(self, patterns_ini=None, input_format='pdf', dedup=False, library='pdfminer', output_format='csv', output_handler=None):
 		basedir = iocp.get_basedir()
+		self.input_format = input_format
 
 		if patterns_ini is None:
 			patterns_ini = os.path.join(basedir, 'data/patterns.ini')
@@ -121,7 +128,10 @@ class Parser(object):
 	def load_patterns(self, fpath):
 		config = ConfigParser.ConfigParser()
 		with open(fpath) as f:
-			config.readfp(f)
+			if hasattr(config, 'read_file'):
+				config.read_file(f)
+			else:
+				config.readfp(f)
 
 		for ind_type in config.sections():
 			try:
@@ -246,6 +256,8 @@ class Parser(object):
 				self.dedup_store = set()
 
 			data = f.read()
+			if isinstance(data, bytes):
+				data = data.decode('utf-8', 'replace')
 			self.handler.print_header(fpath)
 			self.parse_page(fpath, data, 1)
 			self.handler.print_footer(fpath)
@@ -258,17 +270,19 @@ class Parser(object):
 				self.dedup_store = set()
 				
 			data = f.read()
+			if isinstance(data, bytes):
+				data = data.decode('utf-8', 'replace')
 			soup = BeautifulSoup(data)
 			html = soup.findAll(text=True)
 
-			text = u''
+			text = text_type()
 			for elem in html:
 				if elem.parent.name in ['style', 'script', '[document]', 'head', 'title']:
 					continue
-				elif re.match('<!--.*-->', unicode(elem)):
+				elif re.match('<!--.*-->', text_type(elem)):
 					continue
 				else:
-					text += unicode(elem)
+					text += text_type(elem)
 
 			self.handler.print_header(fpath)
 			self.parse_page(fpath, text, 1)
@@ -278,15 +292,8 @@ class Parser(object):
 
 	def parse(self, path):
 		try:
-			if path.startswith('http://') or path.startswith('https://'):
-				if 'requests' not in IMPORTS:
-					e = 'HTTP library not found: requests'
-					raise ImportError(e)
-				headers = { 'User-Agent': 'Mozilla/5.0 Gecko Firefox' }
-				r = requests.get(path, headers=headers)
-				r.raise_for_status()
-				f = StringIO(r.content)
-				self.parser_func(f, path)
+			if self._is_remote(path):
+				self.parse_remote(path)
 				return
 			elif os.path.isfile(path):
 				with open(path, 'rb') as f:
@@ -304,5 +311,21 @@ class Parser(object):
 			raise IOError(e)
 		except (KeyboardInterrupt, SystemExit):
 			raise
+		except Remote.RemoteReadError as e:
+			self.handler.print_remote_error(path, e)
+			raise
 		except Exception as e:
 			self.handler.print_error(path, e)
+
+	def _is_remote(self, path):
+		parsed_scheme = re.match(r'^([a-zA-Z][a-zA-Z0-9+.\-]*)://', path)
+		return parsed_scheme is not None
+
+	def make_remote_fetcher(self):
+		if 'requests' not in IMPORTS:
+			raise Remote.RemoteFetchError('HTTP library not found: requests')
+		return Remote.RemoteFetcher(input_format=self.input_format)
+
+	def parse_remote(self, url):
+		fetcher = self.make_remote_fetcher()
+		fetcher.read_transaction(url, self.parser_func, fpath=url)

@@ -23,3 +23,26 @@ For HTML parsing support:
 
 For HTTP(S) support:
 * [requests](http://docs.python-requests.org/en/latest/) - *pip install requests*
+
+## Remote reports
+
+HTTP(S) inputs are read through a single constrained transaction implemented in
+`iocp/Remote.py`:
+
+* Only `http` and `https` URLs are accepted, and every request target - including
+  each redirect hop - must resolve to a public IP address. Loopback, link-local,
+  private, reserved and multicast ranges are rejected, so internal services (for
+  example the cloud metadata endpoint) cannot be read.
+* Redirects are followed manually with a fixed budget (default 3), each request
+  uses an explicit timeout (default 10s), the response content type must match
+  the selected input format, and downloads are streamed with a size cap
+  (default 10 MiB).
+* Failures are raised as categorized exceptions instead of being mixed into the
+  generic error output:
+  * `Remote.PrivateTargetError` (`private_target`) - non-public target or disallowed scheme
+  * `Remote.ResponseLimitError` (`response_limit`) - timeout, too many redirects, oversize body or bad content type
+  * `Remote.RemoteFetchError` (`fetch_error`) - DNS failure, connection error or bad HTTP status
+  * `Remote.RemoteParseError` (`parse_error`) - the downloaded report could not be parsed
+
+All limits can be tuned through `Remote.RemoteFetcher` constructor parameters.
+Local file and directory parsing is unchanged.
